@@ -1,2 +1,6 @@
 __pycache__/
 *.py[cod]
+android-companion/.gradle/
+android-companion/**/build/
+android-companion/local.properties
+*.iml

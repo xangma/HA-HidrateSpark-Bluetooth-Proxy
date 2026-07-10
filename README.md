@@ -1,19 +1,22 @@
 # HidrateSpark — Home Assistant integration
 
 [![HACS](https://img.shields.io/badge/HACS-Custom-41BDF5?style=flat-square)](https://github.com/hacs/integration)
-[![Release](https://img.shields.io/github/v/release/loryanstrant/HA-HidrateSpark-Bluetooth-Proxy?style=flat-square)](https://github.com/loryanstrant/HA-HidrateSpark-Bluetooth-Proxy/releases)
-[![Release date](https://img.shields.io/github/release-date/loryanstrant/HA-HidrateSpark-Bluetooth-Proxy?style=flat-square)](https://github.com/loryanstrant/HA-HidrateSpark-Bluetooth-Proxy/releases)
-[![Downloads](https://img.shields.io/github/downloads/loryanstrant/HA-HidrateSpark-Bluetooth-Proxy/total?style=flat-square)](https://github.com/loryanstrant/HA-HidrateSpark-Bluetooth-Proxy/releases)
-[![License](https://img.shields.io/github/license/loryanstrant/HA-HidrateSpark-Bluetooth-Proxy?style=flat-square)](LICENSE)
-[![Last commit](https://img.shields.io/github/last-commit/loryanstrant/HA-HidrateSpark-Bluetooth-Proxy?style=flat-square)](https://github.com/loryanstrant/HA-HidrateSpark-Bluetooth-Proxy/commits)
-[![Stars](https://img.shields.io/github/stars/loryanstrant/HA-HidrateSpark-Bluetooth-Proxy?style=flat-square)](https://github.com/loryanstrant/HA-HidrateSpark-Bluetooth-Proxy/stargazers)
+[![Release](https://img.shields.io/github/v/release/xangma/HA-HidrateSpark-Bluetooth-Proxy?style=flat-square)](https://github.com/xangma/HA-HidrateSpark-Bluetooth-Proxy/releases)
+[![Release date](https://img.shields.io/github/release-date/xangma/HA-HidrateSpark-Bluetooth-Proxy?style=flat-square)](https://github.com/xangma/HA-HidrateSpark-Bluetooth-Proxy/releases)
+[![Downloads](https://img.shields.io/github/downloads/xangma/HA-HidrateSpark-Bluetooth-Proxy/total?style=flat-square)](https://github.com/xangma/HA-HidrateSpark-Bluetooth-Proxy/releases)
+[![License](https://img.shields.io/github/license/xangma/HA-HidrateSpark-Bluetooth-Proxy?style=flat-square)](LICENSE)
+[![Last commit](https://img.shields.io/github/last-commit/xangma/HA-HidrateSpark-Bluetooth-Proxy?style=flat-square)](https://github.com/xangma/HA-HidrateSpark-Bluetooth-Proxy/commits)
+[![Stars](https://img.shields.io/github/stars/xangma/HA-HidrateSpark-Bluetooth-Proxy?style=flat-square)](https://github.com/xangma/HA-HidrateSpark-Bluetooth-Proxy/stargazers)
 
-[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=loryanstrant&repository=HA-HidrateSpark-Bluetooth-Proxy&category=integration)
+[![Open in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=xangma&repository=HA-HidrateSpark-Bluetooth-Proxy&category=integration)
 
 A native Home Assistant integration for HidrateSpark smart water bottles.
 Connects via Bluetooth — local adapter **or an ESPHome Bluetooth proxy** — and
 exposes the bottle as a Home Assistant device. No MQTT broker, no Docker
 container, no Linux box near the bottle.
+
+This fork also includes an Android companion that synchronizes individual
+drinks to Health Connect without using the Hidrate cloud.
 
 This is a port of [HidrateSpark-MQTT-bridge][bridge] re-architected onto Home
 Assistant's own Bluetooth stack.
@@ -42,6 +45,7 @@ works with a directly-attached USB or onboard adapter.
 - 🛟 Sip-exceeds-fill fallback when no weight anchor exists yet
 - 🔁 State persists across HA restarts via the Store API
 - 📥 Buffered sips replay on reconnect with their original timestamps
+- ❤️ Authenticated, retry-safe Health Connect sync through the Android companion
 
 **NOTE:** This has only been tested on a HidrateSpark PRO (v1) 21oz / 621ml with chug lid.
 
@@ -59,15 +63,16 @@ works with a directly-attached USB or onboard adapter.
 ### HACS (recommended)
 
 1. HACS → ⋮ → **Custom repositories**
-2. Add `https://github.com/loryanstrant/HidrateSpark-HA-Integration` as an
+2. Add `https://github.com/xangma/HA-HidrateSpark-Bluetooth-Proxy` as an
    **Integration**
-3. Install **HidrateSpark**, restart HA
+3. Install **HidrateSpark Bluetooth Proxy**, restart HA
 4. **Settings → Devices & Services → Add Integration → HidrateSpark**
 
 ### Manual
 
-Copy `custom_components/hidratespark/` into your HA `config/custom_components/`
-folder, restart HA, then add the integration from **Devices & Services**.
+Copy `custom_components/hidratespark_bluetooth_proxy/` into your HA
+`config/custom_components/` folder, restart HA, then add the integration from
+**Devices & Services**.
 
 ## Setup
 
@@ -78,6 +83,39 @@ discovered devices, or type its MAC address directly.
 
 You can change the bottle's capacity later via the integration's **Configure**
 button.
+
+## Health Connect sync
+
+Health Connect can only be written by an Android app, so the integration and
+the phone companion work together:
+
+1. Install this fork in Home Assistant and restart HA.
+2. In your HA profile, create a **long-lived access token**.
+3. Build and install the Android companion:
+
+   ```shell
+   cd android-companion
+   ./gradlew installDebug
+   ```
+
+4. Open **HidrateSpark Health Sync**, enter your trusted HTTPS Home Assistant
+   URL and token, then tap **Save, grant access, and sync**.
+
+The companion needs Android 9 or newer. Health Connect is built into Android
+14+; Android 9–13 users must install Google's Health Connect app. The HA URL
+must use HTTPS with a certificate trusted by the phone.
+
+Every accepted sip is placed in a durable, 5,000-event journal. The companion
+pages through that journal with an authenticated cursor, writes one
+`HydrationRecord` per sip, and only advances the cursor after Health Connect
+accepts the page. Stable client record IDs make retries idempotent. WorkManager
+runs the sync periodically with a 15-minute interval.
+
+The access token is encrypted with Android Keystore and excluded from Android
+backup. The companion requests write-only hydration access, reads no health
+data, has no analytics, and sends data only between the configured HA server
+and Health Connect. See [the companion documentation](android-companion/README.md)
+for build details and limitations.
 
 ## Coexisting with the phone app
 

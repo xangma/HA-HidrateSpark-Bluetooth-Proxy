@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -23,6 +24,7 @@ from .const import (
     RAW_UNITS_PER_ML,
     SIP_DEDUP_TIMESTAMP_TOLERANCE_S,
     SIP_DEDUP_WINDOW,
+    SIP_JOURNAL_MAX_EVENTS,
     STORAGE_KEY_PREFIX,
     STORAGE_VERSION,
 )
@@ -40,6 +42,26 @@ class Sip:
     def to_dict(self) -> dict[str, Any]:
         return {
             "iso": datetime.fromtimestamp(self.timestamp, tz=timezone.utc).isoformat(),
+            "timestamp": self.timestamp,
+            "volume_ml": self.volume_ml,
+        }
+
+
+@dataclass(frozen=True)
+class SipEvent:
+    """A durable, monotonically sequenced sip for external consumers."""
+
+    sequence: int
+    timestamp: float
+    volume_ml: int
+
+    def to_dict(self, entry_id: str, journal_id: str) -> dict[str, Any]:
+        return {
+            "id": f"{entry_id}:{journal_id}:{self.sequence}",
+            "sequence": self.sequence,
+            "iso": datetime.fromtimestamp(
+                self.timestamp, tz=timezone.utc
+            ).isoformat(),
             "timestamp": self.timestamp,
             "volume_ml": self.volume_ml,
         }
@@ -69,6 +91,12 @@ class BottleState:
         self.sips: deque[Sip] = deque(maxlen=200)
         self.last_sip: Optional[Sip] = None
 
+        # Durable export feed. Sequence numbers follow acceptance order rather
+        # than sip timestamps because buffered bottle records can arrive late.
+        self.sip_journal: deque[SipEvent] = deque(maxlen=SIP_JOURNAL_MAX_EVENTS)
+        self._last_sip_sequence = 0
+        self._sip_journal_id = uuid.uuid4().hex
+
         # Daily total with day rollover.
         self._today_date: str = ""
         self._total_today_ml: int = 0
@@ -86,6 +114,9 @@ class BottleState:
 
     async def async_load(self) -> None:
         data = await self._store.async_load() or {}
+        stored_journal_id = str(data.get("sip_journal_id") or "")
+        if stored_journal_id:
+            self._sip_journal_id = stored_journal_id
         self.current_fill_ml = int(data.get("current_fill_ml") or self.bottle_size_ml)
         self.lifetime_total_ml = int(data.get("lifetime_total_ml") or 0)
         self.last_refill_ts = data.get("last_refill_ts")
@@ -111,6 +142,37 @@ class BottleState:
             self.last_sip = max(self.sips, key=lambda s: s.timestamp)
             self.last_seen = self.last_sip.timestamp
 
+        for raw in data.get("sip_journal") or []:
+            try:
+                event = SipEvent(
+                    sequence=int(raw["sequence"]),
+                    timestamp=float(raw["timestamp"]),
+                    volume_ml=int(raw["volume_ml"]),
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+            if event.sequence > 0 and event.volume_ml > 0:
+                self.sip_journal.append(event)
+
+        stored_sequence = int(data.get("last_sip_sequence") or 0)
+        journal_sequence = max(
+            (event.sequence for event in self.sip_journal), default=0
+        )
+        self._last_sip_sequence = max(stored_sequence, journal_sequence)
+
+        # Upgrade existing installations without losing the recent buffered
+        # history they already persisted for BLE deduplication.
+        migrated = not self.sip_journal and bool(self.sips)
+        if migrated:
+            for sip in self.sips:
+                self._append_sip_event(sip)
+
+        # Persist the random stream identity immediately on first setup or
+        # upgrade. If the HA Store is ever lost, a new identity prevents a
+        # phone cursor from remaining ahead of a reset sequence forever.
+        if not stored_journal_id or migrated:
+            await self.async_save()
+
     async def async_save(self) -> None:
         await self._store.async_save(
             {
@@ -128,6 +190,16 @@ class BottleState:
                 "recent_sips": [
                     {"timestamp": s.timestamp, "volume_ml": s.volume_ml}
                     for s in list(self.sips)[-SIP_DEDUP_WINDOW:]
+                ],
+                "last_sip_sequence": self._last_sip_sequence,
+                "sip_journal_id": self._sip_journal_id,
+                "sip_journal": [
+                    {
+                        "sequence": event.sequence,
+                        "timestamp": event.timestamp,
+                        "volume_ml": event.volume_ml,
+                    }
+                    for event in self.sip_journal
                 ],
             }
         )
@@ -248,6 +320,7 @@ class BottleState:
         self._maybe_rollover()
 
         self.sips.append(sip)
+        self._append_sip_event(sip)
         self.lifetime_total_ml += sip.volume_ml
 
         # Only count toward 'today' if the sip actually falls on today's local
@@ -277,6 +350,55 @@ class BottleState:
             self.current_fill_ml = max(0, self.current_fill_ml - sip.volume_ml)
 
         return True
+
+    def _append_sip_event(self, sip: Sip) -> None:
+        """Append one accepted sip to the durable export feed."""
+        self._last_sip_sequence += 1
+        self.sip_journal.append(
+            SipEvent(
+                sequence=self._last_sip_sequence,
+                timestamp=sip.timestamp,
+                volume_ml=sip.volume_ml,
+            )
+        )
+
+    def sip_events_after(
+        self, after: int, limit: int
+    ) -> tuple[list[SipEvent], int, bool, bool]:
+        """Return a cursor page as events, next cursor, has-more, truncated.
+
+        The caller's cursor may predate the retained journal. In that case the
+        page starts at the oldest available event and reports ``truncated`` so
+        clients can surface the gap without getting stuck retrying it.
+        """
+        after = max(0, int(after))
+        limit = max(1, int(limit))
+        if not self.sip_journal:
+            return [], after, False, False
+
+        oldest = self.sip_journal[0].sequence
+        effective_after = max(after, oldest - 1)
+        truncated = after < oldest - 1
+        events = [
+            event
+            for event in self.sip_journal
+            if event.sequence > effective_after
+        ][:limit]
+        next_after = events[-1].sequence if events else effective_after
+        has_more = self.sip_journal[-1].sequence > next_after
+        return events, next_after, has_more, truncated
+
+    @property
+    def oldest_sip_sequence(self) -> int | None:
+        return self.sip_journal[0].sequence if self.sip_journal else None
+
+    @property
+    def latest_sip_sequence(self) -> int:
+        return self._last_sip_sequence
+
+    @property
+    def sip_journal_id(self) -> str:
+        return self._sip_journal_id
 
     @property
     def total_today_ml(self) -> int:

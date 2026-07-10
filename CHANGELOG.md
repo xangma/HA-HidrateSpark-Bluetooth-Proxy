@@ -1,5 +1,25 @@
 # Changelog
 
+## What's new in v0.3.0
+
+### Added
+
+- A durable, per-bottle journal of the last 5,000 accepted sips, including
+  stable IDs and monotonic cursors.
+- Authenticated Home Assistant endpoints for listing bottles and paging through
+  retained sip events.
+- An Android 9+ companion that writes individual sips as Health Connect
+  hydration records and synchronizes every 15 minutes with WorkManager.
+- Retry-safe Health Connect upserts, encrypted token storage, HTTPS-only server
+  configuration, retention-gap reporting, and a write-only privacy rationale.
+
+### Upgrade notes
+
+- Existing installations seed the export journal from their persisted recent
+  sip deduplication window. New sips are then retained up to the 5,000-event
+  limit.
+- Health Connect sync is optional and requires installing the Android companion.
+
 ## What's new in v0.2.0
 Legacy-firmware (e.g. 32oz) bottles now report weight/fill, plus several sip-accuracy
 and resilience fixes. Big thanks to **[Huw Davies (@hadavies)](https://github.com/hadavies)**,

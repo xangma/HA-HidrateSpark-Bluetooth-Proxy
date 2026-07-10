@@ -17,10 +17,18 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import HidrateSparkCoordinator
+from .views import HidrateSparkBottlesView, HidrateSparkSipsView
 
 _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SENSOR]
+
+
+async def async_setup(hass: HomeAssistant, _config: dict) -> bool:
+    """Register the authenticated sip-feed API once per HA process."""
+    hass.http.register_view(HidrateSparkBottlesView())
+    hass.http.register_view(HidrateSparkSipsView())
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

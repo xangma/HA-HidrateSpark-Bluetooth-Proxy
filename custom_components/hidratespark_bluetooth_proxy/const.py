@@ -93,6 +93,14 @@ HANDSHAKE_INTERVAL_S: Final = 0.05
 SIP_DEDUP_WINDOW: Final = 50  # check against last N sips
 SIP_DEDUP_TIMESTAMP_TOLERANCE_S: Final = 5
 
+# Health Connect export journal. This is deliberately much larger than the
+# BLE dedup window: it is the durable retry buffer consumed by the Android
+# companion, so a phone that has been offline can catch up without deriving
+# individual drinks from an aggregate sensor.
+SIP_JOURNAL_MAX_EVENTS: Final = 5000
+SIP_API_DEFAULT_LIMIT: Final = 200
+SIP_API_MAX_LIMIT: Final = 500
+
 # Persistence storage
 STORAGE_VERSION: Final = 1
 STORAGE_KEY_PREFIX: Final = "hidratespark"
