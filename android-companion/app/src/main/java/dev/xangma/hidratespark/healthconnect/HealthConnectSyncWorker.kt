@@ -2,10 +2,8 @@ package dev.xangma.hidratespark.healthconnect
 
 import android.content.Context
 import android.util.Log
-import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
-import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
@@ -21,16 +19,18 @@ class HealthConnectSyncWorker(
         val summary = SyncEngine(applicationContext).sync()
         Result.success(
             workDataOf(
-                "bottles" to summary.bottles,
-                "sips" to summary.sips,
-                "retention_gaps" to summary.retentionGaps,
+                "collected_sips" to summary.collectedSips,
+                "written_sips" to summary.writtenSips,
             ),
         )
     } catch (error: HealthPermissionRequiredException) {
         Log.w(TAG, error.message.orEmpty())
         Result.failure(workDataOf("error" to error.message))
+    } catch (error: BluetoothPermissionRequiredException) {
+        Log.w(TAG, error.message.orEmpty())
+        Result.failure(workDataOf("error" to error.message))
     } catch (error: IOException) {
-        Log.w(TAG, "Temporary synchronization failure", error)
+        Log.w(TAG, "Bottle is temporarily unavailable", error)
         Result.retry()
     } catch (error: Exception) {
         Log.e(TAG, "Synchronization failed", error)
@@ -39,19 +39,13 @@ class HealthConnectSyncWorker(
 
     companion object {
         private const val TAG = "HidrateSparkSync"
-        private const val PERIODIC_WORK_NAME = "hidratespark-health-connect-sync"
+        private const val PERIODIC_WORK_NAME = "hidratespark-direct-health-connect-sync"
 
         fun schedule(context: Context) {
             val request = PeriodicWorkRequestBuilder<HealthConnectSyncWorker>(
                 15,
                 TimeUnit.MINUTES,
-            )
-                .setConstraints(
-                    Constraints.Builder()
-                        .setRequiredNetworkType(NetworkType.CONNECTED)
-                        .build(),
-                )
-                .build()
+            ).build()
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 PERIODIC_WORK_NAME,
                 ExistingPeriodicWorkPolicy.UPDATE,

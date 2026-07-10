@@ -15,8 +15,9 @@ Connects via Bluetooth — local adapter **or an ESPHome Bluetooth proxy** — a
 exposes the bottle as a Home Assistant device. No MQTT broker, no Docker
 container, no Linux box near the bottle.
 
-This fork also includes an Android companion that synchronizes individual
-drinks to Health Connect without using the Hidrate cloud.
+This fork also includes a standalone Android companion that connects directly
+to the bottle and synchronizes individual drinks to Health Connect. It does not
+need Home Assistant or the Hidrate cloud.
 
 This is a port of [HidrateSpark-MQTT-bridge][bridge] re-architected onto Home
 Assistant's own Bluetooth stack.
@@ -45,7 +46,7 @@ works with a directly-attached USB or onboard adapter.
 - 🛟 Sip-exceeds-fill fallback when no weight anchor exists yet
 - 🔁 State persists across HA restarts via the Store API
 - 📥 Buffered sips replay on reconnect with their original timestamps
-- ❤️ Authenticated, retry-safe Health Connect sync through the Android companion
+- ❤️ Direct, retry-safe Bluetooth → Health Connect sync through the Android companion
 
 **NOTE:** This has only been tested on a HidrateSpark PRO (v1) 21oz / 621ml with chug lid.
 
@@ -84,48 +85,47 @@ discovered devices, or type its MAC address directly.
 You can change the bottle's capacity later via the integration's **Configure**
 button.
 
-## Health Connect sync
+## Standalone Health Connect sync
 
-Health Connect can only be written by an Android app, so the integration and
-the phone companion work together:
+The Android companion connects to the bottle itself; installing Home Assistant
+is not required:
 
-1. Install this fork in Home Assistant and restart HA.
-2. In your HA profile, create a **long-lived access token**.
-3. Build and install the Android companion:
+1. Build and install the Android companion:
 
    ```shell
    cd android-companion
    ./gradlew installDebug
    ```
 
-4. Open **HidrateSpark Health Sync**, enter your trusted HTTPS Home Assistant
-   URL and token, then tap **Save, grant access, and sync**.
+2. Fully close the official Hidrate app and disable any Home Assistant
+   connection to the bottle.
+3. Open **HidrateSpark Health Sync**, scan for the bottle, confirm its capacity,
+   then tap **Save, grant access, and sync**.
 
 The companion needs Android 9 or newer. Health Connect is built into Android
-14+; Android 9–13 users must install Google's Health Connect app. The HA URL
-must use HTTPS with a certificate trusted by the phone.
+14+; Android 9–13 users must install Google's Health Connect app.
 
-Every accepted sip is placed in a durable, 5,000-event journal. The companion
-pages through that journal with an authenticated cursor, writes one
-`HydrationRecord` per sip, and only advances the cursor after Health Connect
-accepts the page. Stable client record IDs make retries idempotent. WorkManager
-runs the sync periodically with a 15-minute interval.
+The phone performs the same HydroSync handshake as the Home Assistant
+integration. It commits every sip to a local SQLite journal before
+acknowledging the bottle, writes one idempotent `HydrationRecord` per sip, and
+marks the local row complete only after Health Connect accepts it. WorkManager
+reconnects to the saved bottle address periodically.
 
-The access token is encrypted with Android Keystore and excluded from Android
-backup. The companion requests write-only hydration access, reads no health
-data, has no analytics, and sends data only between the configured HA server
-and Health Connect. See [the companion documentation](android-companion/README.md)
-for build details and limitations.
+The companion requests write-only hydration and Bluetooth access, reads no
+health data, has no Internet permission or analytics, and sends nothing to a
+server. See [the companion documentation](android-companion/README.md) for
+build details and limitations.
 
-## Coexisting with the phone app
+## Coexisting Bluetooth clients
 
-The bottle accepts only one BLE central at a time. If the official app is
-actively connected, this integration won't be able to read the bottle until
-the app disconnects. Recommended setups:
+The bottle accepts only one BLE central at a time. The official app, Home
+Assistant integration, and standalone Health Connect companion therefore
+cannot sync simultaneously. Recommended setups:
 
-- **Best:** uninstall the phone app once you're set up
-- **Acceptable:** force-quit it, or revoke its Bluetooth permission, when
-  you're at home
+- **Direct Health Connect:** close the official app and disable the HA
+  integration for this bottle
+- **Home Assistant:** do not schedule the direct companion against the same
+  bottle
 - **Occasional firmware updates:** open the phone app briefly, then close it
 
 ## Entities

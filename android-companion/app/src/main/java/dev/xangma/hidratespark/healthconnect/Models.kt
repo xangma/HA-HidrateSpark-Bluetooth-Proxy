@@ -1,33 +1,23 @@
 package dev.xangma.hidratespark.healthconnect
 
-data class Bottle(
-    val entryId: String,
-    val journalId: String,
-    val name: String,
-    val address: String,
-)
-
 data class Sip(
     val id: String,
-    val sequence: Long,
-    val timestampSeconds: Double,
+    val bottleAddress: String,
+    val bottleName: String,
+    val timestampMillis: Long,
     val volumeMl: Int,
-)
-
-data class SipPage(
-    val journalId: String,
-    val sips: List<Sip>,
-    val nextAfter: Long,
-    val hasMore: Boolean,
-    val truncated: Boolean,
+    val totalReportedMl: Int,
 )
 
 data class SyncSummary(
-    val bottles: Int,
-    val sips: Int,
-    val retentionGaps: Int,
+    val collectedSips: Int,
+    val writtenSips: Int,
 )
 
 class HealthPermissionRequiredException : IllegalStateException(
     "Health Connect hydration write permission is required",
+)
+
+class BluetoothPermissionRequiredException : IllegalStateException(
+    "Nearby devices permission is required",
 )

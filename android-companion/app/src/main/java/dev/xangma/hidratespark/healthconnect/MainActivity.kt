@@ -10,19 +10,42 @@ import android.widget.ScrollView
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.health.connect.client.HealthConnectClient
 import androidx.health.connect.client.PermissionController
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
+import java.util.Locale
 
 class MainActivity : ComponentActivity() {
     private lateinit var configStore: ConfigStore
-    private lateinit var baseUrl: EditText
-    private lateinit var token: EditText
+    private lateinit var address: EditText
+    private lateinit var bottleName: EditText
+    private lateinit var bottleSize: EditText
+    private lateinit var scan: Button
+    private lateinit var scanResults: LinearLayout
     private lateinit var saveAndSync: Button
     private lateinit var status: TextView
+    private var pendingBluetoothAction: BluetoothAction? = null
 
-    private val permissionLauncher: ActivityResultLauncher<Set<String>> =
+    private val bluetoothPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { grants ->
+        if (grants.values.all { it }) {
+            val action = pendingBluetoothAction
+            pendingBluetoothAction = null
+            when (action) {
+                BluetoothAction.SCAN -> performScan()
+                BluetoothAction.SYNC -> authorizeHealthAndSync()
+                null -> Unit
+            }
+        } else {
+            pendingBluetoothAction = null
+            showStatus(getString(R.string.status_bluetooth_permission_denied))
+        }
+    }
+
+    private val healthPermissionLauncher: ActivityResultLauncher<Set<String>> =
         registerForActivityResult(
             PermissionController.createRequestPermissionResultContract(),
         ) { granted ->
@@ -38,7 +61,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         configStore = ConfigStore(this)
         setContentView(buildContent())
-        baseUrl.setText(configStore.savedBaseUrl())
+        configStore.loadBottle()?.let { saved ->
+            address.setText(saved.address)
+            bottleName.setText(saved.name)
+            bottleSize.setText(String.format(Locale.ROOT, "%d", saved.sizeMl))
+        } ?: bottleSize.setText(
+            String.format(Locale.ROOT, "%d", ConfigStore.DEFAULT_SIZE_ML),
+        )
         showStatus(getString(R.string.status_initial))
     }
 
@@ -61,21 +90,36 @@ class MainActivity : ComponentActivity() {
         addText(getString(R.string.screen_title), 24f)
         addText(getString(R.string.screen_description))
 
-        addText(getString(R.string.home_assistant_url_label))
-        baseUrl = EditText(this).apply {
-            hint = getString(R.string.home_assistant_url_hint)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
-            importantForAutofill = EditText.IMPORTANT_FOR_AUTOFILL_NO
+        scan = Button(this).apply {
+            text = getString(R.string.scan_for_bottle)
+            setOnClickListener { requestBluetoothThen(BluetoothAction.SCAN) }
         }
-        form.addView(baseUrl, matchWrap())
+        form.addView(scan, matchWrap())
 
-        addText(getString(R.string.token_label))
-        token = EditText(this).apply {
-            hint = getString(R.string.token_hint)
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        scanResults = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        form.addView(scanResults, matchWrap())
+
+        addText(getString(R.string.bottle_address_label))
+        address = EditText(this).apply {
+            hint = getString(R.string.bottle_address_hint)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
             importantForAutofill = EditText.IMPORTANT_FOR_AUTOFILL_NO
         }
-        form.addView(token, matchWrap())
+        form.addView(address, matchWrap())
+
+        addText(getString(R.string.bottle_name_label))
+        bottleName = EditText(this).apply {
+            hint = getString(R.string.bottle_name_hint)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+        }
+        form.addView(bottleName, matchWrap())
+
+        addText(getString(R.string.bottle_size_label))
+        bottleSize = EditText(this).apply {
+            hint = ConfigStore.DEFAULT_SIZE_ML.toString()
+            inputType = InputType.TYPE_CLASS_NUMBER
+        }
+        form.addView(bottleSize, matchWrap())
 
         saveAndSync = Button(this).apply {
             text = getString(R.string.save_and_sync)
@@ -92,15 +136,82 @@ class MainActivity : ComponentActivity() {
         return ScrollView(this).apply { addView(form) }
     }
 
+    private fun requestBluetoothThen(action: BluetoothAction) {
+        val missing = BluetoothPermissions.missingForSetup(this)
+        if (missing.isEmpty()) {
+            when (action) {
+                BluetoothAction.SCAN -> performScan()
+                BluetoothAction.SYNC -> authorizeHealthAndSync()
+            }
+        } else {
+            pendingBluetoothAction = action
+            bluetoothPermissionLauncher.launch(missing)
+        }
+    }
+
+    private fun performScan() {
+        scan.isEnabled = false
+        scanResults.removeAllViews()
+        showStatus(getString(R.string.status_scanning))
+        lifecycleScope.launch {
+            try {
+                val bottles = BottleScanner(this@MainActivity).scan()
+                if (bottles.isEmpty()) {
+                    showStatus(getString(R.string.status_no_bottles))
+                } else {
+                    bottles.forEach { bottle -> addScanResult(bottle) }
+                    showStatus(
+                        resources.getQuantityString(
+                            R.plurals.status_choose_bottle,
+                            bottles.size,
+                            bottles.size,
+                        ),
+                    )
+                }
+            } catch (error: Exception) {
+                showStatus(error.message ?: getString(R.string.status_scan_failed))
+            } finally {
+                scan.isEnabled = true
+            }
+        }
+    }
+
+    private fun addScanResult(bottle: DiscoveredBottle) {
+        scanResults.addView(
+            Button(this).apply {
+                text = getString(
+                    R.string.scan_result,
+                    bottle.name,
+                    bottle.address,
+                    bottle.rssi,
+                )
+                setOnClickListener {
+                    address.setText(bottle.address)
+                    bottleName.setText(bottle.name)
+                    showStatus(getString(R.string.status_bottle_selected, bottle.name))
+                }
+            },
+            matchWrap(),
+        )
+    }
+
     private fun saveThenAuthorizeAndSync() {
         try {
-            configStore.saveConnection(baseUrl.text.toString(), token.text.toString())
-            token.text.clear()
+            val size = bottleSize.text.toString().trim().toIntOrNull()
+                ?: throw IllegalArgumentException("Enter the bottle capacity in millilitres")
+            configStore.saveBottle(
+                address.text.toString(),
+                bottleName.text.toString(),
+                size,
+            )
         } catch (error: Exception) {
             showStatus(error.message ?: getString(R.string.status_save_failed))
             return
         }
+        requestBluetoothThen(BluetoothAction.SYNC)
+    }
 
+    private fun authorizeHealthAndSync() {
         when (HealthConnectWriter.sdkStatus(this)) {
             HealthConnectClient.SDK_AVAILABLE -> lifecycleScope.launch {
                 try {
@@ -109,7 +220,7 @@ class MainActivity : ComponentActivity() {
                         runSync()
                     } else {
                         showStatus(getString(R.string.status_waiting_permission))
-                        permissionLauncher.launch(HealthConnectWriter.REQUIRED_PERMISSIONS)
+                        healthPermissionLauncher.launch(HealthConnectWriter.REQUIRED_PERMISSIONS)
                     }
                 } catch (error: Exception) {
                     showStatus(error.message ?: getString(R.string.status_open_failed))
@@ -123,29 +234,23 @@ class MainActivity : ComponentActivity() {
 
     private fun runSync() {
         saveAndSync.isEnabled = false
+        scan.isEnabled = false
         showStatus(getString(R.string.status_syncing))
         lifecycleScope.launch {
             try {
                 val summary = SyncEngine(this@MainActivity, configStore).sync()
-                val message = if (summary.retentionGaps > 0) {
-                    getString(
-                        R.string.status_sync_complete_with_gap,
-                        summary.sips,
-                        summary.bottles,
-                        summary.retentionGaps,
-                    )
-                } else {
+                showStatus(
                     getString(
                         R.string.status_sync_complete,
-                        summary.sips,
-                        summary.bottles,
-                    )
-                }
-                showStatus(message)
+                        summary.collectedSips,
+                        summary.writtenSips,
+                    ),
+                )
             } catch (error: Exception) {
                 showStatus(error.message ?: getString(R.string.status_sync_failed))
             } finally {
                 saveAndSync.isEnabled = true
+                scan.isEnabled = true
             }
         }
     }
@@ -160,4 +265,6 @@ class MainActivity : ComponentActivity() {
     )
 
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
+
+    private enum class BluetoothAction { SCAN, SYNC }
 }

@@ -3,8 +3,9 @@ package dev.xangma.hidratespark.healthconnect
 import android.content.Context
 import androidx.health.connect.client.HealthConnectClient
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.io.IOException
 
 class SyncEngine(
     context: Context,
@@ -13,57 +14,47 @@ class SyncEngine(
     private val appContext = context.applicationContext
 
     suspend fun sync(): SyncSummary = withContext(Dispatchers.IO) {
-        val settings = configStore.loadConnection()
-            ?: throw IllegalStateException("Save the Home Assistant connection first")
-        when (HealthConnectWriter.sdkStatus(appContext)) {
-            HealthConnectClient.SDK_AVAILABLE -> Unit
-            HealthConnectClient.SDK_UNAVAILABLE_PROVIDER_UPDATE_REQUIRED ->
-                throw IllegalStateException("Install or update Health Connect")
-            else -> throw IllegalStateException("Health Connect is unavailable on this device")
+        SYNC_MUTEX.withLock {
+            val bottle = configStore.loadBottle()
+                ?: throw IllegalStateException("Choose a HidrateSpark bottle first")
+            when (HealthConnectWriter.sdkStatus(appContext)) {
+                HealthConnectClient.SDK_AVAILABLE -> Unit
+                HealthConnectClient.SDK_UNAVAILABLE_PROVIDER_UPDATE_REQUIRED ->
+                    throw IllegalStateException("Install or update Health Connect")
+                else -> throw IllegalStateException("Health Connect is unavailable on this device")
+            }
+            val writer = HealthConnectWriter.create(appContext)
+            if (!writer.hasPermission()) throw HealthPermissionRequiredException()
+
+            SipStore(appContext).use { store ->
+                // Finish a transaction interrupted after local persistence but
+                // before the previous Health Connect write, then collect more.
+                var written = writePending(store, writer, bottle)
+                val collected = BottleGattClient(appContext, bottle, store).collectBufferedSips()
+                written += writePending(store, writer, bottle)
+                SyncSummary(collectedSips = collected, writtenSips = written)
+            }
         }
+    }
 
-        val writer = HealthConnectWriter.create(appContext)
-        if (!writer.hasPermission()) throw HealthPermissionRequiredException()
-
-        val homeAssistant = HomeAssistantClient(settings)
-        val bottles = homeAssistant.fetchBottles()
-        var synced = 0
-        var retentionGaps = 0
-        for (bottle in bottles) {
-            var cursor = configStore.cursor(
-                settings.baseUrl,
-                bottle.entryId,
-                bottle.journalId,
-            )
-            do {
-                val page = homeAssistant.fetchSips(bottle.entryId, cursor)
-                if (page.journalId != bottle.journalId) {
-                    throw IOException("Home Assistant sip journal changed; retry synchronization")
-                }
-                if (page.nextAfter < cursor || (page.hasMore && page.nextAfter == cursor)) {
-                    throw IOException("Home Assistant returned a non-advancing sync cursor")
-                }
-                if (page.truncated) retentionGaps += 1
-                writer.write(bottle, page.sips)
-
-                // Advance only after Health Connect accepted the full page.
-                // Retrying a crash here is safe because clientRecordId upserts.
-                if (page.nextAfter > cursor) {
-                    configStore.saveCursor(
-                        settings.baseUrl,
-                        bottle.entryId,
-                        bottle.journalId,
-                        page.nextAfter,
-                    )
-                    cursor = page.nextAfter
-                }
-                synced += page.sips.size
-            } while (page.hasMore)
+    private suspend fun writePending(
+        store: SipStore,
+        writer: HealthConnectWriter,
+        bottle: BottleSettings,
+    ): Int {
+        var written = 0
+        while (true) {
+            val sips = store.pending()
+            if (sips.isEmpty()) return written
+            writer.write(bottle, sips)
+            // Mark only after Health Connect accepts the full batch. A crash
+            // here is safe because clientRecordId updates the same records.
+            store.markSynced(sips)
+            written += sips.size
         }
-        SyncSummary(
-            bottles = bottles.size,
-            sips = synced,
-            retentionGaps = retentionGaps,
-        )
+    }
+
+    companion object {
+        private val SYNC_MUTEX = Mutex()
     }
 }

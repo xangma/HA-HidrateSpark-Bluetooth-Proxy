@@ -9,14 +9,13 @@ import androidx.health.connect.client.records.metadata.Metadata
 import androidx.health.connect.client.units.Volume
 import java.time.Instant
 import java.time.ZoneId
-import kotlin.math.roundToLong
 
 class HealthConnectWriter(private val client: HealthConnectClient) {
     suspend fun hasPermission(): Boolean = client.permissionController
         .getGrantedPermissions()
         .containsAll(REQUIRED_PERMISSIONS)
 
-    suspend fun write(bottle: Bottle, sips: List<Sip>) {
+    suspend fun write(bottle: BottleSettings, sips: List<Sip>) {
         if (sips.isEmpty()) return
         val device = Device(
             type = Device.TYPE_UNKNOWN,
@@ -24,7 +23,7 @@ class HealthConnectWriter(private val client: HealthConnectClient) {
             model = bottle.name,
         )
         val records = sips.map { sip ->
-            val start = Instant.ofEpochMilli((sip.timestampSeconds * 1_000).roundToLong())
+            val start = Instant.ofEpochMilli(sip.timestampMillis)
             val end = start.plusSeconds(1)
             HydrationRecord(
                 startTime = start,

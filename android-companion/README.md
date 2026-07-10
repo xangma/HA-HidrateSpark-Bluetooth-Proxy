@@ -1,22 +1,21 @@
 # HidrateSpark Health Sync for Android
 
-This companion transfers individual HidrateSpark sip events from Home
-Assistant to Health Connect. It is a phone app: Health Connect lives on the
-Android phone, while the bottle can continue connecting to Home Assistant
-through a local Bluetooth adapter or ESPHome Bluetooth proxy.
+This standalone phone app connects directly to a HidrateSpark bottle over
+Bluetooth Low Energy and writes each buffered sip to Health Connect. It does
+not require Home Assistant, the Hidrate cloud, a server, or an Internet
+connection.
 
 ## Requirements
 
 - Android 9 (API 28) or newer
 - Health Connect (built into Android 14+, separate Google app on Android 9–13)
-- This fork of the Home Assistant integration, restarted after installation
-- A Home Assistant long-lived access token
-- A trusted HTTPS URL through which the phone can reach Home Assistant
+- A Bluetooth Low Energy radio
+- A bottle initialized once with the official HidrateSpark app
 - For building: JDK 17+ and Android SDK 36
 
-Self-signed or private-CA certificates only work if the Android device trusts
-that CA. Plain HTTP is deliberately rejected because it would expose the Home
-Assistant bearer token.
+The bottle can serve only one Bluetooth client at a time. Fully close the
+official Hidrate app and disable any Home Assistant HidrateSpark connection
+while using this companion.
 
 ## Build and install
 
@@ -30,40 +29,52 @@ From this directory:
 The debug APK is generated at
 `app/build/outputs/apk/debug/app-debug.apk`.
 
-Open **HidrateSpark Health Sync**, enter the base Home Assistant URL and a
-long-lived access token, then choose **Save, grant access, and sync**. After
-permission is granted, the app performs an immediate sync and schedules unique
-periodic work with a 15-minute interval. Android may defer background work for
-battery optimization or network availability.
+Open **HidrateSpark Health Sync** and:
+
+1. Tap **Scan for HidrateSpark bottle**. Move the bottle to wake it if needed.
+2. Select the bottle and confirm its capacity in millilitres. This matters
+   because sip frames report volume as a percentage of capacity.
+3. Tap **Save, grant access, and sync** and allow Nearby Devices and
+   write-only hydration access.
+
+You can enter the bottle's Bluetooth MAC address manually if scanning does not
+find it. After the first successful setup, WorkManager reconnects directly to
+the saved address periodically; it does not perform background scans.
 
 ## Reliability model
 
-- Home Assistant retains the last 5,000 accepted sips per bottle.
-- The app stores a cursor for each HA server, config entry, and persistent
-  journal identity, and downloads pages of 200.
-- A cursor is committed only after Health Connect accepts the complete page.
-- Every Health Connect record has a deterministic `clientRecordId`, so retrying
-  an interrupted page updates the same record instead of duplicating it.
-- Cursor writes are monotonic, protecting against overlapping manual and
-  background sync runs.
-- If a phone has been offline beyond the retained journal, the app imports all
-  records still available and reports the history gap.
+- The phone performs the HydroSync handshake and supports both modern
+  `USER_DATA` and legacy `DATA_POINT` bottle firmware paths.
+- Each decoded sip is committed to a local SQLite journal before the app sends
+  the `0x57` acknowledgement that removes it from the bottle's queue.
+- Health Connect records have deterministic `clientRecordId` values derived
+  from local event IDs, so retrying an interrupted write updates rather than
+  duplicates the record.
+- Journal rows are marked complete only after Health Connect accepts a full
+  batch. The last 5,000 completed rows remain available for replay detection.
+- Manual and background syncs share a process-wide lock, preventing two phone
+  connections or cursor races.
+- WorkManager requests a sync every 15 minutes, but Android may defer it for
+  battery optimization. The bottle buffers sip events until the next
+  successful connection.
 
-When an existing v0.2 installation first upgrades, only its persisted recent
-sip deduplication window (up to 50 drinks) is available to seed historical
-sync. All newly accepted sips use the larger journal.
+The app currently configures one bottle at a time.
 
-## Privacy and security
+## Permissions and privacy
 
-The app requests only `WRITE_HYDRATION`; it does not read Health Connect data.
-The HA token is encrypted with an AES-GCM key held in Android Keystore. App
-backups and device-transfer backups are disabled. Network redirects and clear
-text traffic are disabled. There are no analytics, advertising SDKs, or third-
-party services.
+The app requests:
 
-The authenticated integration endpoints are:
+- Nearby Devices (`BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT`) on Android 12+
+- Location on Android 9–11, because those versions require it for BLE scanning
+- Write-only Health Connect hydration access
 
-- `GET /api/hidratespark/bottles`
-- `GET /api/hidratespark/bottles/{entry_id}/sips?after={cursor}&limit={limit}`
+Bluetooth results are never used for location. The app has no Internet
+permission, analytics, advertising SDKs, account, access token, or third-party
+service. App backups and device-transfer backups are disabled. It never reads
+Health Connect data.
 
-Both require the normal Home Assistant `Authorization: Bearer …` header.
+## Upgrading from the Home Assistant-based prototype
+
+Version 0.2 ignores the old Home Assistant URL and token settings. Select the
+bottle once in the new screen. Existing Health Connect records remain in place;
+new direct-Bluetooth events use separate stable IDs.

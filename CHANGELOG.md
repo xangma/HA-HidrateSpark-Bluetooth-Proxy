@@ -8,17 +8,20 @@
   stable IDs and monotonic cursors.
 - Authenticated Home Assistant endpoints for listing bottles and paging through
   retained sip events.
-- An Android 9+ companion that writes individual sips as Health Connect
-  hydration records and synchronizes every 15 minutes with WorkManager.
-- Retry-safe Health Connect upserts, encrypted token storage, HTTPS-only server
-  configuration, retention-gap reporting, and a write-only privacy rationale.
+- A standalone Android 9+ companion that connects directly to the bottle,
+  writes individual sips as Health Connect hydration records, and synchronizes
+  periodically with WorkManager.
+- Modern and legacy GATT protocol support, a persist-before-ack local SQLite
+  journal, retry-safe Health Connect upserts, bottle discovery, and a
+  write-only privacy rationale.
 
 ### Upgrade notes
 
 - Existing installations seed the export journal from their persisted recent
   sip deduplication window. New sips are then retained up to the 5,000-event
   limit.
-- Health Connect sync is optional and requires installing the Android companion.
+- Health Connect sync is optional and requires only the Android companion; Home
+  Assistant is no longer part of that data path.
 
 ## What's new in v0.2.0
 Legacy-firmware (e.g. 32oz) bottles now report weight/fill, plus several sip-accuracy

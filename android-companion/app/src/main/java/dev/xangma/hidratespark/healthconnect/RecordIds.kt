@@ -3,7 +3,7 @@ package dev.xangma.hidratespark.healthconnect
 import java.security.MessageDigest
 
 object RecordIds {
-    /** Health Connect upsert key derived from the durable Home Assistant ID. */
+    /** Health Connect upsert key derived from the durable local event ID. */
     fun forSip(sourceId: String): String = sha256("hidratespark:$sourceId").take(32)
 
     fun sha256(value: String): String = MessageDigest

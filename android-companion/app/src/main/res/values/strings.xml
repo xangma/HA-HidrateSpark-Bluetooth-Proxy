@@ -1,24 +1,35 @@
 <resources>
     <string name="app_name">HidrateSpark Health Sync</string>
     <string name="screen_title">HidrateSpark → Health Connect</string>
-    <string name="screen_description">This app reads the authenticated sip journal from Home Assistant and writes each drink to Health Connect. Data stays between your Home Assistant server and this phone.</string>
-    <string name="home_assistant_url_label">Home Assistant HTTPS URL</string>
-    <string name="home_assistant_url_hint">https://home.example.com</string>
-    <string name="token_label">Long-lived access token</string>
-    <string name="token_hint">Leave blank to keep the saved token</string>
+    <string name="screen_description">Connect this phone directly to your bottle over Bluetooth. Sip records stay on the phone and are written to Health Connect—no Home Assistant or Hidrate cloud account is required.</string>
+    <string name="scan_for_bottle">Scan for HidrateSpark bottle</string>
+    <string name="bottle_address_label">Bottle Bluetooth address</string>
+    <string name="bottle_address_hint">AA:BB:CC:DD:EE:FF</string>
+    <string name="bottle_name_label">Bottle name</string>
+    <string name="bottle_name_hint">HidrateSpark</string>
+    <string name="bottle_size_label">Bottle capacity (mL)</string>
     <string name="save_and_sync">Save, grant access, and sync</string>
-    <string name="status_initial">Enter your Home Assistant connection, then grant access and sync.</string>
+    <string name="scan_result">%1$s — %2$s (%3$d dBm)</string>
+    <string name="status_initial">Scan for your bottle, confirm its capacity, then sync.</string>
+    <string name="status_scanning">Scanning for nearby HidrateSpark bottles…</string>
+    <string name="status_no_bottles">No bottle was found. Wake it by moving it, make sure the official app is closed, and try again. You can also enter its Bluetooth address manually.</string>
+    <plurals name="status_choose_bottle">
+        <item quantity="one">Found %1$d bottle. Tap it to select it.</item>
+        <item quantity="other">Found %1$d bottles. Tap one to select it.</item>
+    </plurals>
+    <string name="status_bottle_selected">Selected %1$s. Confirm the capacity, then sync.</string>
+    <string name="status_scan_failed">Bluetooth scan failed</string>
+    <string name="status_bluetooth_permission_denied">Nearby devices permission was not granted.</string>
     <string name="status_permission_denied">Hydration write permission was not granted.</string>
     <string name="status_waiting_permission">Waiting for Health Connect permission…</string>
     <string name="status_provider_update">Install or update Health Connect, then try again.</string>
     <string name="status_unavailable">Health Connect is unavailable on this device.</string>
     <string name="status_open_failed">Could not open Health Connect</string>
-    <string name="status_save_failed">Could not save settings</string>
-    <string name="status_syncing">Syncing…</string>
+    <string name="status_save_failed">Could not save bottle settings</string>
+    <string name="status_syncing">Connecting to the bottle and syncing…</string>
     <string name="status_sync_failed">Synchronization failed</string>
-    <string name="status_sync_complete">Synchronization complete. Imported sip records: %1$d. Bottles checked: %2$d. Background sync runs every 15 minutes.</string>
-    <string name="status_sync_complete_with_gap">Synchronization complete. Imported sip records: %1$d. Bottles checked: %2$d. Feeds with older records outside retained history: %3$d. Background sync runs every 15 minutes.</string>
+    <string name="status_sync_complete">Synchronization complete. New bottle sips: %1$d. Records written to Health Connect: %2$d. Background sync runs periodically.</string>
     <string name="privacy_title">Health Connect privacy</string>
-    <string name="privacy_body">HidrateSpark Health Sync requests write-only access to hydration. It downloads sip time and volume from the Home Assistant server you configure and writes those records to Health Connect. It does not read other health data, use analytics, or send health data to any third party. Your Home Assistant token is encrypted using the Android Keystore.</string>
+    <string name="privacy_body">HidrateSpark Health Sync requests write-only access to hydration and Nearby Devices access for your bottle. It stores sip time and volume locally, writes those records to Health Connect, and does not read other health data. It has no Internet permission, analytics, advertising, cloud service, or Home Assistant dependency.</string>
     <string name="close">Close</string>
 </resources>
