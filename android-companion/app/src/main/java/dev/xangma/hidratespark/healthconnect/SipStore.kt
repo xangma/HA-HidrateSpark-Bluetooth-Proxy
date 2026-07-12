@@ -36,19 +36,30 @@ class SipStore(context: Context) : SQLiteOpenHelper(
         )
     }
 
-    override fun onUpgrade(database: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(database: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) {
+            // The original schema used this column as a MAC key. Bottle MACs
+            // rotate, so migrate old rows to the stable advertised-name key.
+            database.execSQL(
+                "UPDATE $TABLE SET $COLUMN_BOTTLE_ADDRESS = lower(trim($COLUMN_BOTTLE_NAME))",
+            )
+        }
+    }
 
     /** Persist before acknowledging the frame to the bottle. */
     @Synchronized
     fun recordSip(settings: BottleSettings, parsed: BleProtocol.ParsedSip): Boolean {
         val database = writableDatabase
         return database.transaction {
-            if (isDuplicate(database, settings.address, parsed)) {
+            // This legacy column now stores the stable identity rather than a
+            // private BLE address, preserving deduplication across rotations.
+            val bottleIdentity = settings.identity
+            if (isDuplicate(database, bottleIdentity, parsed)) {
                 false
             } else {
                 val values = ContentValues().apply {
                     put(COLUMN_ID, UUID.randomUUID().toString())
-                    put(COLUMN_BOTTLE_ADDRESS, settings.address)
+                    put(COLUMN_BOTTLE_ADDRESS, bottleIdentity)
                     put(COLUMN_BOTTLE_NAME, settings.name)
                     put(COLUMN_TIMESTAMP_MS, parsed.timestampMillis)
                     put(COLUMN_VOLUME_ML, parsed.volumeMl)
@@ -57,7 +68,7 @@ class SipStore(context: Context) : SQLiteOpenHelper(
                     put(COLUMN_CREATED_MS, System.currentTimeMillis())
                 }
                 check(database.insertOrThrow(TABLE, null, values) != -1L)
-                pruneSyncedHistory(database, settings.address)
+                pruneSyncedHistory(database, bottleIdentity)
                 true
             }
         }
@@ -164,7 +175,7 @@ class SipStore(context: Context) : SQLiteOpenHelper(
     companion object {
         const val WRITE_BATCH_SIZE = 200
         private const val DATABASE_NAME = "hidratespark_sips.db"
-        private const val DATABASE_VERSION = 1
+        private const val DATABASE_VERSION = 2
         private const val TABLE = "sip_events"
         private const val COLUMN_ID = "id"
         private const val COLUMN_BOTTLE_ADDRESS = "bottle_address"

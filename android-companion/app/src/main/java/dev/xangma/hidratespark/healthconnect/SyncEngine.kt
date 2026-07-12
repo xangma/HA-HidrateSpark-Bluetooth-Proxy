@@ -17,24 +17,55 @@ class SyncEngine(
         SYNC_MUTEX.withLock {
             val bottle = configStore.loadBottle()
                 ?: throw IllegalStateException("Choose a HidrateSpark bottle first")
-            when (HealthConnectWriter.sdkStatus(appContext)) {
-                HealthConnectClient.SDK_AVAILABLE -> Unit
-                HealthConnectClient.SDK_UNAVAILABLE_PROVIDER_UPDATE_REQUIRED ->
-                    throw IllegalStateException("Install or update Health Connect")
-                else -> throw IllegalStateException("Health Connect is unavailable on this device")
-            }
-            val writer = HealthConnectWriter.create(appContext)
-            if (!writer.hasPermission()) throw HealthPermissionRequiredException()
+            val writer = validatedWriter()
+            val discovered = BottleLocator(appContext).resolve(bottle)
+            configStore.updateLastKnownAddress(discovered.address)
 
             SipStore(appContext).use { store ->
-                // Finish a transaction interrupted after local persistence but
-                // before the previous Health Connect write, then collect more.
-                var written = writePending(store, writer, bottle)
-                val collected = BottleGattClient(appContext, bottle, store).collectBufferedSips()
-                written += writePending(store, writer, bottle)
-                SyncSummary(collectedSips = collected, writtenSips = written)
+                BottleGattClient(appContext, bottle, store).open(discovered.address).use { connection ->
+                    syncConnectedLocked(bottle, connection, store, writer)
+                }
             }
         }
+    }
+
+    /** Drains an already-subscribed GATT session after a queue-count notification. */
+    suspend fun syncConnected(
+        bottle: BottleSettings,
+        connection: BottleGattClient.Connection,
+    ): SyncSummary = withContext(Dispatchers.IO) {
+        SYNC_MUTEX.withLock {
+            val writer = validatedWriter()
+            SipStore(appContext).use { store ->
+                syncConnectedLocked(bottle, connection, store, writer)
+            }
+        }
+    }
+
+    private suspend fun syncConnectedLocked(
+        bottle: BottleSettings,
+        connection: BottleGattClient.Connection,
+        store: SipStore,
+        writer: HealthConnectWriter,
+    ): SyncSummary {
+        // Finish a transaction interrupted after local persistence but before
+        // the previous Health Connect write, then drain the bottle queue.
+        var written = writePending(store, writer, bottle)
+        val collected = connection.drain()
+        written += writePending(store, writer, bottle)
+        return SyncSummary(collectedSips = collected, writtenSips = written)
+    }
+
+    private suspend fun validatedWriter(): HealthConnectWriter {
+        when (HealthConnectWriter.sdkStatus(appContext)) {
+            HealthConnectClient.SDK_AVAILABLE -> Unit
+            HealthConnectClient.SDK_UNAVAILABLE_PROVIDER_UPDATE_REQUIRED ->
+                throw IllegalStateException("Install or update Health Connect")
+            else -> throw IllegalStateException("Health Connect is unavailable on this device")
+        }
+        val writer = HealthConnectWriter.create(appContext)
+        if (!writer.hasPermission()) throw HealthPermissionRequiredException()
+        return writer
     }
 
     private suspend fun writePending(

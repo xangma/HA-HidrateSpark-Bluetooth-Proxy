@@ -2,12 +2,17 @@ package dev.xangma.hidratespark.healthconnect
 
 import android.annotation.SuppressLint
 import android.content.Context
+import java.util.Locale
 
 data class BottleSettings(
-    val address: String,
+    /** A short-lived address cache. The advertised name is the bottle identity. */
+    val address: String?,
     val name: String,
     val sizeMl: Int,
 ) {
+    val identity: String
+        get() = name.trim().lowercase(Locale.ROOT)
+
     companion object {
         private val MAC_ADDRESS = Regex("^[0-9A-F]{2}(:[0-9A-F]{2}){5}$")
 
@@ -25,6 +30,12 @@ data class BottleSettings(
             }
             return sizeMl
         }
+
+        fun validateName(raw: String): String {
+            val name = raw.trim()
+            require(name.isNotBlank()) { "Choose the bottle name shown by Bluetooth scanning" }
+            return name
+        }
     }
 }
 
@@ -36,18 +47,24 @@ class ConfigStore(context: Context) {
     )
 
     fun loadBottle(): BottleSettings? {
-        val address = preferences.getString(KEY_ADDRESS, null) ?: return null
+        val savedName = preferences.getString(KEY_NAME, null)?.trim().orEmpty()
+        val cachedAddress = preferences.getString(KEY_ADDRESS, null)
+            ?.let { raw -> runCatching { BottleSettings.normalizeAddress(raw) }.getOrNull() }
+        // Configurations from older versions always have an address. Preserve
+        // them, but use their saved name for all new discovery attempts.
+        if (savedName.isBlank() && cachedAddress == null) return null
         return BottleSettings(
-            address = address,
-            name = preferences.getString(KEY_NAME, DEFAULT_NAME).orEmpty().ifBlank { DEFAULT_NAME },
+            address = cachedAddress,
+            name = savedName.ifBlank { DEFAULT_NAME },
             sizeMl = preferences.getInt(KEY_SIZE_ML, DEFAULT_SIZE_ML),
         )
     }
 
     fun saveBottle(rawAddress: String, rawName: String, sizeMl: Int): BottleSettings {
         val settings = BottleSettings(
-            address = BottleSettings.normalizeAddress(rawAddress),
-            name = rawName.trim().ifBlank { DEFAULT_NAME },
+            address = rawAddress.trim().takeIf { it.isNotEmpty() }
+                ?.let(BottleSettings::normalizeAddress),
+            name = BottleSettings.validateName(rawName),
             sizeMl = BottleSettings.validateSize(sizeMl),
         )
         check(
@@ -58,6 +75,14 @@ class ConfigStore(context: Context) {
                 .commit(),
         ) { "Could not save bottle settings" }
         return settings
+    }
+
+    fun updateLastKnownAddress(address: String) {
+        check(
+            preferences.edit()
+                .putString(KEY_ADDRESS, BottleSettings.normalizeAddress(address))
+                .commit(),
+        ) { "Could not save the bottle's current Bluetooth address" }
     }
 
     companion object {

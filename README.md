@@ -109,12 +109,16 @@ The phone performs the same HydroSync handshake as the Home Assistant
 integration. It commits every sip to a local SQLite journal before
 acknowledging the bottle, writes one idempotent `HydrationRecord` per sip, and
 marks the local row complete only after Health Connect accepts it. WorkManager
-reconnects to the saved bottle address periodically.
+currently reconnects to the saved bottle address periodically. Device testing
+found that the bottle rotates its private Bluetooth address, so rediscovery by
+stable advertised name or service is still required for reliable background
+reconnection.
 
 The companion requests write-only hydration and Bluetooth access, reads no
 health data, has no Internet permission or analytics, and sends nothing to a
 server. See [the companion documentation](android-companion/README.md) for
-build details and limitations.
+build details, measured advertisement and Android presence-test results, and
+current limitations.
 
 ## Coexisting Bluetooth clients
 

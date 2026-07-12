@@ -11,6 +11,7 @@ import android.bluetooth.BluetoothProfile
 import android.bluetooth.BluetoothStatusCodes
 import android.content.Context
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.channels.Channel
@@ -18,6 +19,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.Closeable
 import java.io.IOException
 import java.util.UUID
 
@@ -28,20 +30,54 @@ class BottleGattClient(
 ) {
     private val appContext = context.applicationContext
 
+    /** A single subscribed GATT session. Its calls must be made serially. */
+    inner class Connection internal constructor(
+        private val gatt: BluetoothGatt,
+        private val session: GattSession,
+        private val dataCharacteristic: BluetoothGattCharacteristic,
+    ) : Closeable {
+        suspend fun awaitPendingRecords(): Int {
+            while (true) {
+                BleProtocol.pendingRecords(session.awaitNotification(dataCharacteristic.uuid))?.let {
+                    return it
+                }
+            }
+        }
+
+        suspend fun drain(): Int = session.drain(gatt, dataCharacteristic)
+
+        fun takeQueuedNotifications(): List<GattNotification> =
+            session.takeQueuedNotifications(dataCharacteristic.uuid)
+
+        suspend fun observeNotifications(durationMillis: Long): List<GattNotification> =
+            session.observeNotifications(dataCharacteristic.uuid, durationMillis)
+
+        @SuppressLint("MissingPermission")
+        override fun close() {
+            runCatching { gatt.disconnect() }
+            gatt.close()
+        }
+    }
+
+    /** Opens a notification subscription using an address freshly resolved by scanning. */
     @SuppressLint("MissingPermission")
-    suspend fun collectBufferedSips(): Int {
+    suspend fun open(address: String): Connection {
         if (!BluetoothPermissions.hasConnectPermission(appContext)) {
             throw BluetoothPermissionRequiredException()
+        }
+        val normalizedAddress = try {
+            BottleSettings.normalizeAddress(address)
+        } catch (error: IllegalArgumentException) {
+            throw IOException("The discovered bottle address is invalid", error)
         }
         val adapter = appContext.getSystemService(BluetoothManager::class.java)?.adapter
             ?: throw IOException("Bluetooth is not supported on this phone")
         if (!adapter.isEnabled) throw IOException("Bluetooth is turned off")
         val device = try {
-            adapter.getRemoteDevice(settings.address)
+            adapter.getRemoteDevice(normalizedAddress)
         } catch (error: IllegalArgumentException) {
-            throw IOException("The saved bottle address is invalid", error)
+            throw IOException("The discovered bottle address is invalid", error)
         }
-
         val session = GattSession()
         val gatt = device.connectGatt(
             appContext,
@@ -54,16 +90,53 @@ class BottleGattClient(
             session.discoverServices(gatt)
             val dataCharacteristic = session.prepareDataCharacteristic(gatt)
             delay(SUBSCRIPTION_SETTLE_MS)
-            return session.drain(gatt, dataCharacteristic)
+            return Connection(gatt, session, dataCharacteristic)
         } catch (error: TimeoutCancellationException) {
-            throw IOException("Timed out while connecting to the bottle", error)
-        } finally {
             runCatching { gatt.disconnect() }
             gatt.close()
+            throw IOException("Timed out while connecting to the bottle", error)
+        } catch (error: Exception) {
+            runCatching { gatt.disconnect() }
+            gatt.close()
+            throw error
         }
     }
 
-    private inner class GattSession {
+    /**
+     * Subscribes to the bottle's data characteristic without ever sending the
+     * drain command. This is intentionally read-only with respect to the
+     * bottle queue, so it can establish whether the bottle emits a new sip as
+     * an unsolicited GATT notification.
+     */
+    @SuppressLint("MissingPermission")
+    suspend fun observeUnsolicitedNotifications(
+        durationMillis: Long,
+        onReady: () -> Unit = {},
+    ): GattNotificationProbeResult {
+        require(durationMillis > 0) { "The observation duration must be positive" }
+        open(requireCachedAddress()).use { connection ->
+            // Ignore any notification caused by subscription itself. No
+            // DRAIN_COMMAND is sent before, during, or after this probe.
+            delay(LIVE_PROBE_SETTLE_MS)
+            val baseline = connection.takeQueuedNotifications()
+            onReady()
+            val notifications = connection.observeNotifications(durationMillis)
+            return GattNotificationProbeResult(
+                requestedDurationMillis = durationMillis,
+                baselineNotifications = baseline,
+                notifications = notifications,
+            )
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    suspend fun collectBufferedSips(address: String = requireCachedAddress()): Int =
+        open(address).use { it.drain() }
+
+    private fun requireCachedAddress(): String = settings.address
+        ?: throw IOException("No cached bottle address. Scan for ${settings.name} first")
+
+    internal inner class GattSession {
         val connected = CompletableDeferred<Unit>()
         private val servicesDiscovered = CompletableDeferred<Int>()
         private val notifications = Channel<Notification>(Channel.UNLIMITED)
@@ -154,7 +227,7 @@ class BottleGattClient(
                 }
                 requireCharacteristic(gatt, BleProtocol.USER_DATA).also {
                     enableNotifications(gatt, it)
-                    Log.i(TAG, "Using modern USER_DATA protocol for ${settings.address}")
+                    Log.i(TAG, "Using modern USER_DATA protocol for ${settings.name}")
                 }
             } catch (error: IOException) {
                 prepareLegacyDataCharacteristic(gatt, error)
@@ -170,7 +243,14 @@ class BottleGattClient(
             Log.w(TAG, "Modern handshake unavailable; trying legacy protocol", modernError)
             return requireCharacteristic(gatt, BleProtocol.DATA_POINT).also {
                 enableNotifications(gatt, it)
-                Log.i(TAG, "Using legacy DATA_POINT protocol for ${settings.address}")
+                Log.i(TAG, "Using legacy DATA_POINT protocol for ${settings.name}")
+            }
+        }
+
+        suspend fun awaitNotification(characteristicUuid: UUID): ByteArray {
+            while (true) {
+                val notification = notifications.receive()
+                if (notification.characteristic == characteristicUuid) return notification.value
             }
         }
 
@@ -217,6 +297,36 @@ class BottleGattClient(
                 writeCharacteristic(gatt, dataCharacteristic, BleProtocol.DRAIN_COMMAND)
             }
             return inserted
+        }
+
+        fun takeQueuedNotifications(characteristicUuid: UUID): List<GattNotification> {
+            val observed = mutableListOf<GattNotification>()
+            while (true) {
+                val notification = notifications.tryReceive().getOrNull() ?: break
+                if (notification.characteristic == characteristicUuid) {
+                    observed += notification.toObservation(0)
+                }
+            }
+            return observed
+        }
+
+        suspend fun observeNotifications(
+            characteristicUuid: UUID,
+            durationMillis: Long,
+        ): List<GattNotification> {
+            val startedAt = SystemClock.elapsedRealtime()
+            val observed = mutableListOf<GattNotification>()
+            withTimeoutOrNull(durationMillis) {
+                while (true) {
+                    val notification = notifications.receive()
+                    if (notification.characteristic == characteristicUuid) {
+                        observed += notification.toObservation(
+                            SystemClock.elapsedRealtime() - startedAt,
+                        )
+                    }
+                }
+            }
+            return observed
         }
 
         @SuppressLint("MissingPermission")
@@ -340,6 +450,12 @@ class BottleGattClient(
 
     private data class Notification(val characteristic: UUID, val value: ByteArray)
 
+    private fun Notification.toObservation(elapsedMillis: Long) = GattNotification(
+        elapsedMillis = elapsedMillis,
+        rawDataHex = value.toHex(),
+        pendingRecords = BleProtocol.pendingRecords(value),
+    )
+
     private fun ByteArray.toHex(): String = joinToString("") {
         (it.toInt() and 0xff).toString(16).padStart(2, '0')
     }
@@ -351,5 +467,35 @@ class BottleGattClient(
         private const val NOTIFICATION_IDLE_MS = 7_000L
         private const val HANDSHAKE_INTERVAL_MS = 50L
         private const val SUBSCRIPTION_SETTLE_MS = 100L
+        private const val LIVE_PROBE_SETTLE_MS = 2_000L
     }
+}
+
+data class GattNotification(
+    val elapsedMillis: Long,
+    val rawDataHex: String,
+    val pendingRecords: Int?,
+)
+
+data class GattNotificationProbeResult(
+    val requestedDurationMillis: Long,
+    val baselineNotifications: List<GattNotification>,
+    val notifications: List<GattNotification>,
+) {
+    fun report(): String = buildString {
+        appendLine("HidrateSpark unsolicited GATT notification probe")
+        appendLine("Drain command sent: no")
+        appendLine("Observation duration: %.1fs".format(requestedDurationMillis / 1_000.0))
+        appendLine("Subscription baseline notifications: ${baselineNotifications.size}")
+        appendLine("Notifications after the sip prompt: ${notifications.size}")
+        notifications.forEach { notification ->
+            appendLine(
+                "%.3fs pending=%s raw=%s".format(
+                    notification.elapsedMillis / 1_000.0,
+                    notification.pendingRecords?.toString() ?: "unknown",
+                    notification.rawDataHex,
+                ),
+            )
+        }
+    }.trimEnd()
 }

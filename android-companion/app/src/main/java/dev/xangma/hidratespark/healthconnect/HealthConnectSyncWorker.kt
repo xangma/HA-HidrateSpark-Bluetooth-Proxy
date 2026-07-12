@@ -15,26 +15,32 @@ class HealthConnectSyncWorker(
     appContext: Context,
     workerParameters: WorkerParameters,
 ) : CoroutineWorker(appContext, workerParameters) {
-    override suspend fun doWork(): Result = try {
-        val summary = SyncEngine(applicationContext).sync()
-        Result.success(
-            workDataOf(
-                "collected_sips" to summary.collectedSips,
-                "written_sips" to summary.writtenSips,
-            ),
-        )
-    } catch (error: HealthPermissionRequiredException) {
-        Log.w(TAG, error.message.orEmpty())
-        Result.failure(workDataOf("error" to error.message))
-    } catch (error: BluetoothPermissionRequiredException) {
-        Log.w(TAG, error.message.orEmpty())
-        Result.failure(workDataOf("error" to error.message))
-    } catch (error: IOException) {
-        Log.w(TAG, "Bottle is temporarily unavailable", error)
-        Result.retry()
-    } catch (error: Exception) {
-        Log.e(TAG, "Synchronization failed", error)
-        Result.failure(workDataOf("error" to (error.message ?: "Synchronization failed")))
+    override suspend fun doWork(): Result {
+        if (LiveBottleSyncService.isRunning()) {
+            Log.i(TAG, "Deferring recovery work while live sync owns the GATT connection")
+            return Result.success(workDataOf("deferred_to_live_sync" to true))
+        }
+        return try {
+            val summary = SyncEngine(applicationContext).sync()
+            Result.success(
+                workDataOf(
+                    "collected_sips" to summary.collectedSips,
+                    "written_sips" to summary.writtenSips,
+                ),
+            )
+        } catch (error: HealthPermissionRequiredException) {
+            Log.w(TAG, error.message.orEmpty())
+            Result.failure(workDataOf("error" to error.message))
+        } catch (error: BluetoothPermissionRequiredException) {
+            Log.w(TAG, error.message.orEmpty())
+            Result.failure(workDataOf("error" to error.message))
+        } catch (error: IOException) {
+            Log.w(TAG, "Bottle is temporarily unavailable", error)
+            Result.retry()
+        } catch (error: Exception) {
+            Log.e(TAG, "Synchronization failed", error)
+            Result.failure(workDataOf("error" to (error.message ?: "Synchronization failed")))
+        }
     }
 
     companion object {
@@ -45,7 +51,9 @@ class HealthConnectSyncWorker(
             val request = PeriodicWorkRequestBuilder<HealthConnectSyncWorker>(
                 15,
                 TimeUnit.MINUTES,
-            ).build()
+            )
+                .setInitialDelay(15, TimeUnit.MINUTES)
+                .build()
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 PERIODIC_WORK_NAME,
                 ExistingPeriodicWorkPolicy.UPDATE,
