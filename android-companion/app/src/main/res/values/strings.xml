@@ -57,6 +57,7 @@
     <string name="live_sync_starting">Starting…</string>
     <string name="live_sync_needs_bottle">Select a bottle in the app first.</string>
     <string name="live_sync_discovering">Finding %1$s…</string>
+    <string name="live_sync_recovering">Checking the bottle for queued sips…</string>
     <string name="live_sync_listening">Connected to %1$s; listening for bottle updates.</string>
     <string name="live_sync_draining">Bottle update: syncing %1$d queued record(s)…</string>
     <string name="live_sync_complete">Synced %1$d new sip(s); wrote %2$d record(s).</string>

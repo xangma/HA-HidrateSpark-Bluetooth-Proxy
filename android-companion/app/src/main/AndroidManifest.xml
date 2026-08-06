@@ -13,6 +13,7 @@
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.health.WRITE_HYDRATION" />
 
     <queries>
@@ -33,6 +34,16 @@
             android:name=".LiveBottleSyncService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <receiver
+            android:name=".LiveSyncRestartReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <activity
             android:name=".PermissionsRationaleActivity"

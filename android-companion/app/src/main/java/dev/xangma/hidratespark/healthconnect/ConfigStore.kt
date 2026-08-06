@@ -85,6 +85,21 @@ class ConfigStore(context: Context) {
         ) { "Could not save the bottle's current Bluetooth address" }
     }
 
+    fun isLiveSyncEnabled(): Boolean = preferences.getBoolean(
+        KEY_LIVE_SYNC_ENABLED,
+        // Existing installations predate this flag. A configured bottle means
+        // live sync was previously enabled unless the user stops it now.
+        loadBottle() != null,
+    )
+
+    fun setLiveSyncEnabled(enabled: Boolean) {
+        check(
+            preferences.edit()
+                .putBoolean(KEY_LIVE_SYNC_ENABLED, enabled)
+                .commit(),
+        ) { "Could not save the live sync setting" }
+    }
+
     companion object {
         const val DEFAULT_SIZE_ML = 591
         private const val DEFAULT_NAME = "HidrateSpark"
@@ -92,5 +107,6 @@ class ConfigStore(context: Context) {
         private const val KEY_ADDRESS = "bottle_address"
         private const val KEY_NAME = "bottle_name"
         private const val KEY_SIZE_ML = "bottle_size_ml"
+        private const val KEY_LIVE_SYNC_ENABLED = "live_sync_enabled"
     }
 }

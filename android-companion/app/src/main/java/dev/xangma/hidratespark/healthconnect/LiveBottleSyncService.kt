@@ -24,8 +24,9 @@ import kotlinx.coroutines.launch
 import java.io.IOException
 
 /**
- * Keeps one GATT notification subscription alive while the user explicitly
- * enables live sync. A periodic worker remains the recovery path.
+ * Keeps one GATT notification subscription alive until the user explicitly
+ * stops live sync. The system and [LiveSyncRestartReceiver] restore it after
+ * process death, reboot, or package replacement.
  */
 class LiveBottleSyncService : Service() {
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -35,6 +36,7 @@ class LiveBottleSyncService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            ConfigStore(applicationContext).setLiveSyncEnabled(false)
             stopSelf()
             return START_NOT_STICKY
         }
@@ -43,7 +45,7 @@ class LiveBottleSyncService : Service() {
         if (listenerJob?.isActive != true) {
             listenerJob = serviceScope.launch { listenUntilStopped() }
         }
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     override fun onDestroy() {
@@ -70,7 +72,23 @@ class LiveBottleSyncService : Service() {
                 SipStore(applicationContext).use { store ->
                     BottleGattClient(applicationContext, bottle, store).open(discovered.address).use {
                         connection ->
-                        Log.i(TAG, "Connected to ${bottle.name}; waiting for GATT notifications")
+                        Log.i(TAG, "Connected to ${bottle.name}; recovering queued bottle records")
+                        updateNotification(getString(R.string.live_sync_recovering))
+                        val recovery = syncEngine.syncConnected(bottle, connection)
+                        Log.i(
+                            TAG,
+                            "Reconnect recovery collected ${recovery.collectedSips} sip(s) and wrote " +
+                                "${recovery.writtenSips} Health Connect record(s)",
+                        )
+                        if (recovery.collectedSips > 0 || recovery.writtenSips > 0) {
+                            updateNotification(
+                                getString(
+                                    R.string.live_sync_complete,
+                                    recovery.collectedSips,
+                                    recovery.writtenSips,
+                                ),
+                            )
+                        }
                         updateNotification(getString(R.string.live_sync_listening, bottle.name))
                         val queuePolicy = PendingQueuePolicy()
                         while (serviceScope.isActive) {
@@ -169,6 +187,7 @@ class LiveBottleSyncService : Service() {
         internal fun isRunning(): Boolean = running
 
         fun start(context: Context) {
+            ConfigStore(context.applicationContext).setLiveSyncEnabled(true)
             ContextCompat.startForegroundService(
                 context,
                 Intent(context, LiveBottleSyncService::class.java),
@@ -176,6 +195,7 @@ class LiveBottleSyncService : Service() {
         }
 
         fun stop(context: Context) {
+            ConfigStore(context.applicationContext).setLiveSyncEnabled(false)
             context.stopService(Intent(context, LiveBottleSyncService::class.java))
         }
     }
